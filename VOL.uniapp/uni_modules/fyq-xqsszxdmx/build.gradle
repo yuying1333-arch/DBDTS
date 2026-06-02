@@ -1,0 +1,45 @@
+def extOrDefault = { String key, def fallbackValue ->
+    if (rootProject.ext.has(key)) {
+        return rootProject.ext.get(key)
+    }
+    if (project.hasProperty(key)) {
+        return project.property(key)
+    }
+    return fallbackValue
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace "uts.sdk.modules.fyq_xqsszxdmx"
+    compileSdkVersion Integer.parseInt("${extOrDefault('compileSdkVersion', 34)}")
+
+    defaultConfig {
+        minSdkVersion Integer.parseInt("${extOrDefault('minSdkVersion', 21)}")
+        targetSdkVersion Integer.parseInt("${extOrDefault('targetSdkVersion', 34)}")
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+    flatDir {
+        dirs 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+    implementation files('libs/SparkChain.aar')
+}

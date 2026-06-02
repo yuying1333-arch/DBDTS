@@ -1,0 +1,43 @@
+/**
+ * fyq-xqsszxdmx - 讯飞实时录音转写大模型插件
+ * index.uts - 插件入口（导出声明，平台实现见 app-android/app-ios）
+ */
+
+import type {
+	CheckPermissionsResult,
+	CheckPermissionsOptions,
+	StartRecordingOptions,
+	StartRecordingResult,
+	StopRecordingOptions,
+	StopRecordingResult
+} from './interface'
+
+export type {
+	CheckPermissionsResult,
+	CheckPermissionsOptions,
+	StartRecordingOptions,
+	StartRecordingResult,
+	StopRecordingOptions,
+	StopRecordingResult
+}
+
+export { type FyqXqsszxdmxError, type FyqXqsszxdmxErrorCode } from './unierror'
+
+// 以下函数的实际实现由平台目录（app-android/index.uts、app-ios/index.uts）提供
+// 根目录仅提供 fallback，编译时平台实现会自动覆盖
+
+export function checkAudioPermissions(options: CheckPermissionsOptions) {
+	options.fail?.({ errCode: 9040001, errMsg: '当前平台不支持' })
+	options.complete?.({})
+}
+
+@UTSJS.keepAlive
+export function startRecording(options: StartRecordingOptions) {
+	options.fail?.({ errCode: 9040002, errMsg: '当前平台不支持' })
+	options.complete?.({})
+}
+
+export function stopRecording(options: StopRecordingOptions) {
+	options.fail?.({ errCode: 9040006, errMsg: '当前平台不支持' })
+	options.complete?.({})
+}

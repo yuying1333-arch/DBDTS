@@ -1,0 +1,3 @@
+vol:Loading local data is disabled; this must be enabled on both the client and server sides   at VOL.Core.Dapper.SqlDapper.MySqlBulkInsert(DataTable table, String tableName, String fileName, String tmpPath) in D:\Vol-master\VOL.Core\Dapper\SqlDapper.cs:line 815
+   at VOL.Core.Dapper.SqlDapper.BulkInsert(DataTable table, String tableName, Nullable`1 sqlBulkCopyOptions, String fileName, String tmpPath) in D:\Vol-master\VOL.Core\Dapper\SqlDapper.cs:line 728
+   at VOL.Core.Services.Logger.Start() in D:\Vol-master\VOL.Core\Services\Logger.cs:line 186VOL.Core

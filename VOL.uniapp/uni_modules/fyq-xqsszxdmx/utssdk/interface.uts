@@ -1,0 +1,49 @@
+/**
+ * fyq-xqsszxdmx - 讯飞实时录音转写大模型插件
+ * interface.uts - 公共接口定义
+ */
+
+// ==================== 权限检查 ====================
+
+export type CheckPermissionsResult = {
+	code: number,
+	msg: string
+}
+
+export type CheckPermissionsOptions = {
+	success?: (res: CheckPermissionsResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+// ==================== 开始录音 ====================
+
+export type StartRecordingOptions = {
+	appId: string              // 讯飞 appId
+	apiKey: string             // 讯飞 APIKey（accessKeyId）
+	apiSecret: string          // 讯飞 APISecret（accessKeySecret）
+	lang?: string              // 语言类型，默认 "autodialect"
+	onTextReceived?: (text: string, isFinal: boolean) => void  // 转写回调
+	onError?: (errMsg: string) => void  // 错误回调
+	success?: (res: StartRecordingResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+export type StartRecordingResult = {
+	code: number,
+	msg: string
+}
+
+// ==================== 停止录音 ====================
+
+export type StopRecordingOptions = {
+	success?: (res: StopRecordingResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+export type StopRecordingResult = {
+	code: number,
+	msg: string
+}

@@ -1,0 +1,9 @@
+{
+	"minSdkVersion": 21,
+	"dependencies": [
+		{
+			"id": "local.sparkchain.aar",
+			"source": "implementation files('libs/SparkChain.aar')"
+		}
+	]
+}

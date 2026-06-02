@@ -1,0 +1,29 @@
+# Build
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE
+.vs/
+.idea/
+
+# Node / frontend
+node_modules/
+dist/
+.npm
+*.log
+
+# Local secrets & uploads
+**/appsettings.Development.json
+.env
+.env.local
+.env.*.local
+
+# OS
+Thumbs.db
+.DS_Store

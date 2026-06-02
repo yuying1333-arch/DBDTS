@@ -1,0 +1,416 @@
+/**
+ * fyq-xqsszxdmx iOS 端实现
+ * 使用 WebSocket 直连讯飞 RTASR 大模型服务
+ */
+
+import AVFoundation
+import Foundation
+
+// ==================== 全局状态 ====================
+
+var audioEngine: AVAudioEngine?
+var audioBuffer: AVAudioPCMBuffer?
+var sessionId: string = ""
+var isConnected: boolean = false
+var isRecording: boolean = false
+var webSocketTask: URLSessionWebSocketTask?
+var sendTimer: Timer?
+var audioQueue: ArrayBuffer[] = []
+
+// 当前录音会话的回调
+var currentOnTextReceived: ((text: string, isFinal: boolean) => void) | null = null
+var currentOnError: ((errMsg: string) => void) | null = null
+var currentAppId: string = ""
+var currentApiKey: string = ""
+var currentApiSecret: string = ""
+
+// 讯飞 WebSocket 服务器地址
+const WS_URL = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1"
+
+// ==================== 权限检查 ====================
+
+export function checkAudioPermissions(options: CheckPermissionsOptions) {
+	const status = AVCaptureDevice.authorizationStatus(for: AVMediaType.audio)
+
+	if (status == AVAuthorizationStatus.authorized) {
+		options.success?.({ code: 0, msg: '已授权录音权限' })
+	} else if (status == AVAuthorizationStatus.denied) {
+		options.success?.({ code: 2, msg: '录音权限已被拒绝，请手动开启' })
+	} else {
+		options.success?.({ code: 1, msg: '录音权限未授权' })
+	}
+	options.complete?.({})
+}
+
+// ==================== 开始录音 ====================
+
+@UTSJS.keepAlive
+export function startRecording(options: StartRecordingOptions) {
+	// 检查录音权限
+	let status = AVCaptureDevice.authorizationStatus(for: AVMediaType.audio)
+	if (status != AVAuthorizationStatus.authorized) {
+		AVCaptureDevice.requestAccess(for: AVMediaType.audio, completionHandler: { granted in
+			if (!granted) {
+				const err = { errCode: 9040001, errMsg: '录音权限未授予' }
+				options.fail?.(err)
+				options.complete?.(err)
+				return
+			}
+			_startRecordingInternal(options)
+		})
+		return
+	}
+	_startRecordingInternal(options)
+}
+
+function _startRecordingInternal(options: StartRecordingOptions) {
+	// 保存回调
+	currentOnTextReceived = options.onTextReceived
+	currentOnError = options.onError
+	currentAppId = options.appId
+	currentApiKey = options.apiKey
+	currentApiSecret = options.apiSecret
+
+	// 生成 WebSocket URL 并连接
+	const wsUrl = generateWebSocketUrl(
+		options.appId,
+		options.apiKey,
+		options.apiSecret,
+		options.lang ?? "autodialect"
+	)
+
+	connectWebSocket(wsUrl, options)
+}
+
+// ==================== WebSocket 连接 ====================
+
+function connectWebSocket(wsUrl: string, options: StartRecordingOptions) {
+	guard let url = URL(string: wsUrl) else {
+		const err = { errCode: 9040004, errMsg: 'WebSocket URL 无效' }
+		options.fail?.(err)
+		options.complete?.(err)
+		return
+	}
+
+	let session = URLSession(configuration: .default, delegate: nil, delegateQueue: OperationQueue.main)
+	webSocketTask = session.webSocketTask(with: url)
+	webSocketTask!.resume()
+
+	// 监听消息
+	receiveMessages()
+
+	// 发送音频
+	webSocketTask!.send(completion: { error in
+		if (error != nil) {
+			const err = { errCode: 9040004, errMsg: 'WebSocket 连接失败: ' + (error! as any).localizedDescription }
+			options.fail?.(err)
+			options.complete?.(err)
+			return
+		}
+	})
+
+	// 等一小段时间让连接建立，然后启动录音
+	DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: {
+		self.startAudioCapture()
+		options.success?.({ code: 0, msg: '录音转写已启动' })
+		options.complete?.({ code: 0, msg: '录音转写已启动' })
+	})
+}
+
+function receiveMessages() {
+	webSocketTask?.receive { message, error in
+		if let error = error {
+			console.error('[fyq-xqsszxdmx] WebSocket 接收错误:', error.localizedDescription)
+			self.currentOnError?("WebSocket 错误: " + error.localizedDescription)
+			return
+		}
+
+		if let message = message {
+			switch message {
+			case .string(let text):
+				self.handleWebSocketMessage(text)
+			case .data(let data):
+				if let text = String(data: data, encoding: .utf8) {
+					self.handleWebSocketMessage(text)
+				}
+			@unknown default:
+				break
+			}
+
+			// 继续接收
+			self.receiveMessages()
+		}
+	}
+}
+
+// ==================== 消息处理 ====================
+
+function handleWebSocketMessage(_ text: string) {
+	guard let data = text.data(using: .utf8) else { return }
+	guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+	// 获取 action 类型
+	var action: string? = nil
+
+	if let msgType = json["msg_type"] as? String, msgType == "action",
+	   let innerData = json["data"] as? [String: Any],
+	   let innerAction = innerData["action"] as? String {
+		action = innerAction
+	} else if let directAction = json["action"] as? String {
+		action = directAction
+	} else if let innerData = json["data"] as? [String: Any],
+	          let innerAction = innerData["action"] as? String {
+		action = innerAction
+	} else if let msgType = json["msg_type"] as? String {
+		action = msgType
+	}
+
+	guard let act = action else { return }
+
+	switch act {
+	case "started":
+		let payload = json["data"] as? [String: Any] ?? json
+		sessionId = (payload["sessionId"] as? String) ?? (payload["contextId"] as? String) ?? ""
+		isConnected = true
+
+	case "result":
+		if json["res_type"] as? String == "frc" {
+			// 功能状态消息，忽略
+			return
+		}
+		handleTranscriptionResult(json)
+
+	case "error":
+		let payload = json["data"] as? [String: Any] ?? json
+		let errorMsg = (payload["desc"] as? String) ?? (payload["message"] as? String) ?? "未知错误"
+		currentOnError?("服务端错误: " + errorMsg)
+
+	case "end":
+		stopRecordingInternal()
+
+	default:
+		break
+	}
+}
+
+function handleTranscriptionResult(_ message: [String: Any]) {
+	guard let messageData = message["data"] else { return }
+
+	var data: [String: Any]? = nil
+	if let dataStr = messageData as? String,
+	   let dataBytes = dataStr.data(using: .utf8),
+	   let parsed = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any] {
+		data = parsed
+	} else if let dict = messageData as? [String: Any] {
+		data = dict
+	}
+
+	guard let d = data else { return }
+
+	// 解析中文转写结果 cn.st.rt.ws[].cw[].w
+	if let cn = d["cn"] as? [String: Any],
+	   let st = cn["st"] as? [String: Any],
+	   let rt = st["rt"] as? [String: Any],
+	   let ws = rt["ws"] as? [[String: Any]] {
+
+		var text = ""
+		for w in ws {
+			if let cw = w["cw"] as? [[String: Any]], cw.count > 0 {
+				if let word = cw[0]["w"] as? String {
+					text += word
+				}
+			}
+		}
+
+		let type = st["type"] as? Int ?? 0
+		let isFinal = type == 0
+
+		if !text.isEmpty {
+			currentOnTextReceived?(text, isFinal)
+		}
+
+		// 检查是否为最后一帧
+		if let ls = d["ls"] as? Bool, ls {
+			// 句子结束
+		}
+	}
+}
+
+// ==================== 录音管理 ====================
+
+function startAudioCapture() {
+	audioEngine = AVAudioEngine()
+	guard let engine = audioEngine else { return }
+
+	let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+	let inputNode = engine.inputNode
+
+	do {
+		try inputNode.setFormat(format)
+	} catch {
+		// iOS 17+ 可能需要使用不同的方式
+	}
+
+	audioBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1280)
+
+	do {
+		try engine.start()
+		isRecording = true
+
+		// 定时读取音频数据并发送
+		sendTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true, block: { timer in
+			self.captureAndSendAudio()
+		})
+
+	} catch {
+		const err = { errCode: 9040002, errMsg: '录音初始化失败: ' + error.localizedDescription }
+		currentOnError?("录音初始化失败: " + error.localizedDescription)
+	}
+}
+
+function captureAndSendAudio() {
+	guard let engine = audioEngine, engine.isRunning, isRecording else { return }
+	guard let inputNode = engine.inputNode else { return }
+	guard let buffer = audioBuffer else { return }
+
+	let format = inputNode.outputFormat(forBus: 0)
+	let _ = try? inputNode.read(from: buffer)
+
+	// 将 PCM buffer 转换为字节数据
+	let audioData = Data(bytes: buffer.int16ChannelData![0], count: Int(buffer.frameLength) * 2)
+
+	if !audioData.isEmpty && isConnected {
+		sendAudioData(audioData)
+	}
+}
+
+function sendAudioData(_ data: Data) {
+	guard let task = webSocketTask else { return }
+	let message = URLSessionWebSocketTask.Message.data(data)
+	task.send(message) { error in
+		if let error = error {
+			console.error('[fyq-xqsszxdmx] 发送音频数据失败:', error.localizedDescription)
+		}
+	}
+}
+
+// ==================== 停止录音 ====================
+
+export function stopRecording(options: StopRecordingOptions) {
+	if (!isRecording) {
+		const err = { errCode: 9040006, errMsg: '未在录音状态' }
+		options.fail?.(err)
+		options.complete?.(err)
+		return
+	}
+
+	stopRecordingInternal()
+	options.success?.({ code: 0, msg: '录音已停止' })
+	options.complete?.({ code: 0, msg: '录音已停止' })
+}
+
+function stopRecordingInternal() {
+	isRecording = false
+
+	// 停止录音
+	sendTimer?.invalidate()
+	sendTimer = nil
+
+	audioEngine?.stop()
+	audioEngine = nil
+	audioBuffer = nil
+
+	// 发送结束标识
+	if (isConnected && !sessionId.isEmpty) {
+		let endMessage: [String: Any] = ["end": true, "sid": sessionId]
+		if let endData = try? JSONSerialization.data(withJSONObject: endMessage),
+		   let endStr = String(data: endData, encoding: .utf8) {
+			let message = URLSessionWebSocketTask.Message.string(endStr)
+			webSocketTask?.send(message)
+		}
+	}
+
+	// 断开 WebSocket
+	webSocketTask?.cancel(with: .goingAway, reason: nil)
+	webSocketTask = nil
+	isConnected = false
+	sessionId = ""
+
+	// 清理回调
+	currentOnTextReceived = null
+	currentOnError = null
+}
+
+// ==================== 签名生成 ====================
+
+function generateWebSocketUrl(_ appId: string, _ apiKey: string, _ apiSecret: string, _ lang: string): string {
+	let utc = getUTCTimeString()
+	let uuid = generateUUID()
+
+	// 构建参数
+	var params: [String: String] = [
+		"accessKeyId": apiKey,
+		"appId": appId,
+		"uuid": uuid,
+		"utc": utc,
+		"lang": lang,
+		"audio_encode": "pcm_s16le",
+		"samplerate": "16000"
+	]
+
+	// 按参数名升序排序
+	let sortedKeys = params.keys.sorted()
+
+	// 拼接 baseString
+	var baseStringParts: [String] = []
+	for key in sortedKeys {
+		let encodedKey = urlEncode(key)
+		let encodedValue = urlEncode(params[key]!)
+		baseStringParts.append(encodedKey + "=" + encodedValue)
+	}
+	let baseString = baseStringParts.joined(separator: "&")
+
+	// HmacSHA1 签名
+	let signature = hmacSHA1(baseString, apiSecret)
+	params["signature"] = signature
+
+	// 构建查询字符串
+	var queryParts: [String] = []
+	for key in params.keys {
+		queryParts.append(urlEncode(key) + "=" + urlEncode(params[key]!))
+	}
+	let queryString = queryParts.joined(separator: "&")
+
+	return WS_URL + "?" + queryString
+}
+
+function getUTCTimeString(): string {
+	let formatter = DateFormatter()
+	formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+	formatter.timeZone = TimeZone.current
+	return formatter.string(from: Date())
+}
+
+function generateUUID(): string {
+	return UUID().uuidString.lowercased()
+}
+
+function urlEncode(_ str: string): string {
+	let allowedChars = CharacterSet()
+	return str.addingPercentEncoding(withAllowedCharacters: allowedChars) ?? str
+}
+
+function hmacSHA1(_ string: string, _ key: string): string {
+	guard let keyData = key.data(using: .utf8) else { return "" }
+	guard let stringData = string.data(using: .utf8) else { return "" }
+
+	var hmacOut = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+	keyData.withUnsafeBytes { keyBytes in
+		stringData.withUnsafeBytes { stringBytes in
+			CCHmac(CC_SHA1, keyBytes.baseAddress, keyData.count, stringBytes.baseAddress, stringData.count, &hmacOut)
+		}
+	}
+
+	let hmacData = Data(hmacOut)
+	return hmacData.base64EncodedString()
+}

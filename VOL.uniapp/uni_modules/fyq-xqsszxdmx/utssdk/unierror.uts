@@ -1,0 +1,18 @@
+/**
+ * fyq-xqsszxdmx - 错误码定义
+ */
+
+export type FyqXqsszxdmxErrorCode = 9040001 | 9040002 | 9040003 | 9040004 | 9040005 | 9040006;
+
+/**
+ * 错误码说明：
+ * 9040001 - 录音权限被拒绝
+ * 9040002 - 录音初始化失败
+ * 9040003 - SDK 初始化失败
+ * 9040004 - 转写启动失败
+ * 9040005 - 音频写入失败
+ * 9040006 - 未在录音状态
+ */
+export interface FyqXqsszxdmxError extends IUniError {
+	errCode: FyqXqsszxdmxErrorCode
+}

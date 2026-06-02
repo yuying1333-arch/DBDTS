@@ -1,0 +1,382 @@
+/**
+ * fyq-xqsszxdmx Android 端实现
+ * 基于讯飞 SparkChain SDK 实现实时录音转写大模型
+ */
+
+import ActivityCompat from 'androidx.core.app.ActivityCompat'
+import PackageManager from 'android.content.pm.PackageManager'
+import AudioRecord from 'android.media.AudioRecord'
+import MediaRecorder from 'android.media.MediaRecorder'
+import AudioFormat from 'android.media.AudioFormat'
+import Thread from 'java.lang.Thread'
+import AtomicBoolean from 'java.util.concurrent.atomic.AtomicBoolean'
+
+import SparkChainConfig from 'com.iflytek.sparkchain.core.SparkChainConfig'
+import SparkChain from 'com.iflytek.sparkchain.core.SparkChain'
+import RTASR from 'com.iflytek.sparkchain.core.rtasr.RTASR'
+import RTASRCallbacks from 'com.iflytek.sparkchain.core.rtasr.RTASRCallbacks'
+import RegionType from 'com.iflytek.sparkchain.core.asr.RegionType'
+
+// ==================== 类型定义（平台文件中必须重新定义） ====================
+
+type CheckPermissionsResult = {
+	code: number,
+	msg: string
+}
+
+type StartRecordingResult = {
+	code: number,
+	msg: string
+}
+
+type StopRecordingResult = {
+	code: number,
+	msg: string
+}
+
+type StartRecordingOptions = {
+	appId: string
+	apiKey: string
+	apiSecret: string
+	lang?: string
+	onTextReceived?: (text: string, isFinal: boolean) => void
+	onError?: (errMsg: string) => void
+	success?: (res: StartRecordingResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+type StopRecordingOptions = {
+	success?: (res: StopRecordingResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+type CheckPermissionsOptions = {
+	success?: (res: CheckPermissionsResult) => void
+	fail?: (res: any) => void
+	complete?: (res: any) => void
+}
+
+// ==================== 全局状态 ====================
+
+let mRTASR: RTASR | null = null
+let isRecording = false
+let isWrite = new AtomicBoolean(false)
+let audioRecorder: AudioRecord | null = null
+let recordThread: Thread | null = null
+let sdkInitialized = false
+
+// 当前录音会话的回调
+let currentOnTextReceived: ((text: string, isFinal: boolean) => void) | null = null
+let currentOnError: ((errMsg: string) => void) | null = null
+
+// 权限常量
+const PERMISSION_RECORD_AUDIO = "android.permission.RECORD_AUDIO"
+
+// 音频参数（使用 Int 类型避免 Number/Int 不匹配）
+const SAMPLE_RATE: Int = 16000
+const CHANNEL_CONFIG: Int = AudioFormat.CHANNEL_IN_MONO
+const AUDIO_FORMAT_VAL: Int = AudioFormat.ENCODING_PCM_16BIT
+const AUDIO_SOURCE: Int = MediaRecorder.AudioSource.MIC
+
+// ==================== SDK 初始化 ====================
+
+function initSDK(appId: string, apiKey: string, apiSecret: string): boolean {
+	if (sdkInitialized) {
+		return true
+	}
+	try {
+		const config = SparkChainConfig.builder()
+		config.appID(appId)
+		config.apiKey(apiKey)
+		config.apiSecret(apiSecret)
+		SparkChain.getInst().init(UTSAndroid.getAppContext()!, config)
+		sdkInitialized = true
+		return true
+	} catch (e: any) {
+		console.error('[fyq-xqsszxdmx] SDK 初始化失败:', e)
+		return false
+	}
+}
+
+// ==================== 权限检查 ====================
+
+export function checkAudioPermissions(options: CheckPermissionsOptions) {
+	try {
+		const context = UTSAndroid.getAppContext()!
+		const activity = UTSAndroid.getUniActivity()!
+
+		const permissionCheck = ActivityCompat.checkSelfPermission(context, PERMISSION_RECORD_AUDIO)
+
+		if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
+			options.success?.({ code: 0, msg: '已授权录音权限' })
+		} else {
+			const shouldShow = ActivityCompat.shouldShowRequestPermissionRationale(activity, PERMISSION_RECORD_AUDIO)
+			if (shouldShow) {
+				options.success?.({ code: 2, msg: '录音权限已被拒绝，请手动开启' })
+			} else {
+				options.success?.({ code: 1, msg: '录音权限未授权' })
+			}
+		}
+		options.complete?.({})
+	} catch (e: any) {
+		const err = { errCode: 9040001, errMsg: '检查录音权限异常' }
+		options.fail?.(err)
+		options.complete?.(err)
+	}
+}
+
+// ==================== 开始录音 ====================
+
+@UTSJS.keepAlive
+export function startRecording(options: StartRecordingOptions) {
+	try {
+		const context = UTSAndroid.getAppContext()!
+		const activity = UTSAndroid.getUniActivity()!
+
+		// 1. 检查权限
+		const permissionCheck = ActivityCompat.checkSelfPermission(context, PERMISSION_RECORD_AUDIO)
+		if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+			const permissions = arrayOf<String>(PERMISSION_RECORD_AUDIO)
+			ActivityCompat.requestPermissions(activity, permissions, 1001)
+			const err = { errCode: 9040001, errMsg: '录音权限未授予' }
+			options.fail?.(err)
+			options.complete?.(err)
+			return
+		}
+
+		// 2. 初始化 SDK
+		if (!initSDK(options.appId, options.apiKey, options.apiSecret)) {
+			const err = { errCode: 9040003, errMsg: 'SDK 初始化失败' }
+			options.fail?.(err)
+			options.complete?.(err)
+			return
+		}
+
+		// 3. 保存回调
+		currentOnTextReceived = options.onTextReceived
+		currentOnError = options.onError
+
+		// 4. 创建 RTASR 实例（大模型模式）
+		if (mRTASR == null) {
+			mRTASR = new RTASR("", RegionType.CN_LLM_TYPE)
+			mRTASR!.registerCallbacks(new MyRTASRCallbacks())
+		}
+
+		// 5. 配置参数
+		const lang = options.lang ?? "autodialect"
+		mRTASR!.setParams("lang", lang)
+		mRTASR!.setParams("samplerate", "16000")
+		mRTASR!.setParams("audio_encode", "pcm_s16le")
+
+		// 6. 启动转写
+		const ret = mRTASR!.start("1")
+		if (ret != 0) {
+			const err = { errCode: 9040004, errMsg: '转写启动失败，错误码: ' + ret }
+			options.fail?.(err)
+			options.complete?.(err)
+			return
+		}
+
+		// 7. 开始录音
+		isRecording = true
+		isWrite.set(true)
+		startAudioRecord()
+
+		options.success?.({ code: 0, msg: '录音转写已启动' })
+		options.complete?.({ code: 0, msg: '录音转写已启动' })
+
+	} catch (e: any) {
+		const err = { errCode: 9040002, errMsg: '录音初始化失败' }
+		options.fail?.(err)
+		options.complete?.(err)
+	}
+}
+
+// ==================== 停止录音 ====================
+
+export function stopRecording(options: StopRecordingOptions) {
+	try {
+		if (!isRecording) {
+			const err = { errCode: 9040006, errMsg: '未在录音状态' }
+			options.fail?.(err)
+			options.complete?.(err)
+			return
+		}
+
+		isRecording = false
+		isWrite.set(false)
+
+		// 停止录音
+		stopAudioRecord()
+
+		// 停止 RTASR
+		if (mRTASR != null) {
+			mRTASR!.stop()
+		}
+
+		// 清理回调
+		currentOnTextReceived = null
+		currentOnError = null
+
+		options.success?.({ code: 0, msg: '录音已停止' })
+		options.complete?.({ code: 0, msg: '录音已停止' })
+	} catch (e: any) {
+		const err = { errCode: 9040006, errMsg: '停止录音失败' }
+		options.fail?.(err)
+		options.complete?.(err)
+	}
+}
+
+// ==================== RTASR 回调实现 ====================
+
+class MyRTASRCallbacks implements RTASRCallbacks {
+	override onResult(result: RTASR.RtAsrResult, usrTag: any) {
+		const data = result.getData()
+		const status = result.getStatus()
+
+		if (status == 1) {
+			// 子句流式中间结果
+			currentOnTextReceived?.(data, false)
+		} else if (status == 2) {
+			// 子句确认结果
+			currentOnTextReceived?.(data, true)
+		} else if (status == 3) {
+			// 结束结果
+			currentOnTextReceived?.(data, true)
+			// 自动停止录音
+			if (isRecording) {
+				isRecording = false
+				isWrite.set(false)
+				stopAudioRecord()
+				if (mRTASR != null) {
+					mRTASR!.stop()
+				}
+				currentOnTextReceived = null
+				currentOnError = null
+			}
+		}
+	}
+
+	override onError(error: RTASR.RtAsrError, usrTag: any) {
+		const code = error.getCode()
+		const msg = error.getErrMsg()
+		const errMsg = 'RTASR 错误 [' + code + ']: ' + msg
+		console.error('[fyq-xqsszxdmx]', errMsg)
+		currentOnError?.(errMsg)
+
+		// 自动停止录音
+		if (isRecording) {
+			isRecording = false
+			isWrite.set(false)
+			stopAudioRecord()
+			if (mRTASR != null) {
+				mRTASR!.stop()
+			}
+			currentOnTextReceived = null
+			currentOnError = null
+		}
+	}
+
+	override onBeginOfSpeech() {
+		// 开始说话
+	}
+
+	override onEndOfSpeech() {
+		// 停止说话
+	}
+}
+
+// ==================== 录音管理 ====================
+
+function startAudioRecord() {
+	try {
+		const bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT_VAL)
+		audioRecorder = new AudioRecord(
+			AUDIO_SOURCE,
+			SAMPLE_RATE,
+			CHANNEL_CONFIG,
+			AUDIO_FORMAT_VAL,
+			bufferSize
+		)
+
+		if (audioRecorder!.getState() != AudioRecord.STATE_INITIALIZED) {
+			console.error('[fyq-xqsszxdmx] AudioRecord 初始化失败')
+			audioRecorder = null
+			return
+		}
+
+		recordThread = new Thread(new RunnableImpl())
+		recordThread!.start()
+	} catch (e: any) {
+		console.error('[fyq-xqsszxdmx] 启动录音失败:', e)
+	}
+}
+
+class RunnableImpl implements Runnable {
+	override run() {
+		if (audioRecorder == null) return
+
+		android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+		const bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT_VAL)
+		const tempBuffer = new ByteArray(bufferSize)
+
+		audioRecorder!.startRecording()
+
+		while (isRecording) {
+			if (audioRecorder == null) break
+			const bytesRecord = audioRecorder!.read(tempBuffer, 0, bufferSize)
+
+			if (bytesRecord == AudioRecord.ERROR_INVALID_OPERATION
+				|| bytesRecord == AudioRecord.ERROR_BAD_VALUE) {
+				continue
+			}
+
+			if (bytesRecord > 0 && isRecording && isWrite.get()) {
+				if (mRTASR != null) {
+					const ret = mRTASR!.write(tempBuffer)
+					if (ret != 0) {
+						isWrite.set(false)
+					}
+				}
+			} else {
+				break
+			}
+		}
+
+		if (audioRecorder != null) {
+			try {
+				audioRecorder!.stop()
+				audioRecorder!.release()
+			} catch (e: any) {
+				// ignore
+			}
+			audioRecorder = null
+		}
+	}
+}
+
+function stopAudioRecord() {
+	isRecording = false
+	if (recordThread != null) {
+		try {
+			recordThread!.interrupt()
+			recordThread!.join(1000)
+		} catch (e: any) {
+			// ignore
+		}
+		recordThread = null
+	}
+	if (audioRecorder != null) {
+		try {
+			if (audioRecorder!.getState() == AudioRecord.STATE_INITIALIZED) {
+				audioRecorder!.stop()
+			}
+			audioRecorder!.release()
+		} catch (e: any) {
+			// ignore
+		}
+		audioRecorder = null
+	}
+}

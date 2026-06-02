@@ -1,0 +1,79 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/register/register",
+    "pages/student/initial/initial",
+    "pages/login/networkConfig",
+    "pages/teacher/control/control",
+    "pages/teacher/discussion/discussion",
+    "pages/teacher/submissions/submissions",
+    "pages/menu/menu",
+    "pages/form/form",
+    "pages/message/message",
+    "pages/user/user",
+    "pages/user/about/about",
+    "pages/user/modifyPwd/modifyPwd",
+    "pages/order/App_Appointment/App_Appointment",
+    "pages/order/App_Appointment1/App_Appointment1",
+    "pages/appmanager/App_TransactionAvgPrice/App_TransactionAvgPrice",
+    "pages/appmanager/App_Transaction/App_Transaction",
+    "pages/appmanager/App_Transaction1/App_Transaction1",
+    "pages/order/SellOrder/SellOrder",
+    "pages/order/SellOrder/Detail/Detail",
+    "pages/form/form1",
+    "pages/form/form2",
+    "pages/table/table1/table1",
+    "pages/table/table2/table2",
+    "pages/table/table3/table3",
+    "pages/pagedemo/pagedemo",
+    "pages/message/detail/detail",
+    "pages/message/operation/operation",
+    "pages/form/charts/chart1",
+    "pages/order/SellOrder/SellOrderAduit",
+    "pages/map/map",
+    "pages/table/table4/table4",
+    "pages/table/table5/table5",
+    "pages/flow/flow",
+    "pages/flow/audit/audit"
+  ],
+  "tabBar": {
+    "color": "#535353",
+    "selectedColor": "#2f92f9",
+    "fontSize": "12px",
+    "borderStyle": "white",
+    "backgroundColor": "#ffffff",
+    "list": [
+      {
+        "pagePath": "pages/login/login",
+        "iconPath": "static/icons/stats.png",
+        "selectedIconPath": "static/icons/stats_active.png",
+        "text": "登录入口"
+      },
+      {
+        "pagePath": "pages/login/networkConfig",
+        "iconPath": "static/icons/menu.png",
+        "selectedIconPath": "static/icons/menu_active.png",
+        "text": "网络配置"
+      }
+    ]
+  },
+  "subPackages": [],
+  "preloadRule": {},
+  "window": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "uni-app",
+    "navigationBarBackgroundColor": "#00aaff",
+    "backgroundColor": "#FFFFFF",
+    "enablePullDownRefresh": false,
+    "backgroundTextStyle": "dark"
+  },
+  "networkTimeout": {
+    "request": 10000,
+    "downloadFile": 10000
+  },
+  "debug": false,
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "usingComponents": {}
+}
